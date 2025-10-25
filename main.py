@@ -29,33 +29,70 @@ TABLE_NAME = "events"
 
 
 # -------------------
+# Convert CSV to Parquet
+# -------------------
+def convert_csv_to_parquet(con, data_dir: Path):
+    """Convert CSV files to Parquet format using DuckDB for faster loading."""
+    csv_files = sorted(data_dir.glob("events_part_*.csv"))
+    parquet_files = list(data_dir.glob("events_part_*.parquet"))
+    
+    if parquet_files:
+        print(f"🟩 Found {len(parquet_files)} existing Parquet files")
+        return
+    
+    if not csv_files:
+        raise FileNotFoundError(f"No events_part_*.csv found in {data_dir}")
+    
+    print(f"🟩 Converting {len(csv_files)} CSV files to Parquet format using DuckDB...")
+    
+    for csv_file in csv_files:
+        parquet_file = csv_file.with_suffix('.parquet')
+        print(f"  Converting {csv_file.name}...")
+        
+        # Use DuckDB to read CSV and write Parquet
+        con.execute(f"""
+            COPY (
+                SELECT *
+                FROM read_csv(
+                    '{csv_file}',
+                    AUTO_DETECT = FALSE,
+                    HEADER = TRUE,
+                    COLUMNS = {{
+                        'ts': 'VARCHAR',
+                        'type': 'VARCHAR',
+                        'auction_id': 'VARCHAR',
+                        'advertiser_id': 'VARCHAR',
+                        'publisher_id': 'VARCHAR',
+                        'bid_price': 'VARCHAR',
+                        'user_id': 'VARCHAR',
+                        'total_price': 'VARCHAR',
+                        'country': 'VARCHAR'
+                    }}
+                )
+            )
+            TO '{parquet_file}' (FORMAT PARQUET);
+        """)
+    
+    print(f"🟩 Conversion complete")
+
+
+# -------------------
 # Load Data
 # -------------------
 def load_data(con, data_dir: Path):
-    csv_files = list(data_dir.glob("events_part_*.csv"))
-
-    if csv_files:
-        print(f"🟩 Loading {len(csv_files)} CSV parts from {data_dir} ...")
+    # First, convert CSV to Parquet if needed
+    convert_csv_to_parquet(con, data_dir)
+    
+    parquet_files = sorted(data_dir.glob("events_part_*.parquet"))
+    
+    if parquet_files:
+        print(f"🟩 Loading {len(parquet_files)} Parquet parts from {data_dir} ...")
         con.execute(f"""
             CREATE OR REPLACE VIEW {TABLE_NAME} AS
             WITH raw AS (
               SELECT *
-              FROM read_csv(
-                '{data_dir}/events_part_*.csv',
-                AUTO_DETECT = FALSE,
-                HEADER = TRUE,
-                union_by_name = TRUE,
-                COLUMNS = {{
-                  'ts': 'VARCHAR',
-                  'type': 'VARCHAR',
-                  'auction_id': 'VARCHAR',
-                  'advertiser_id': 'VARCHAR',
-                  'publisher_id': 'VARCHAR',
-                  'bid_price': 'VARCHAR',
-                  'user_id': 'VARCHAR',
-                  'total_price': 'VARCHAR',
-                  'country': 'VARCHAR'
-                }}
+              FROM read_parquet(
+                '{data_dir}/events_part_*.parquet'
               )
             ),
             casted AS (
@@ -89,7 +126,7 @@ def load_data(con, data_dir: Path):
         """)
         print(f"🟩 Loading complete")
     else:
-        raise FileNotFoundError(f"No events_part_*.csv found in {data_dir}")
+        raise FileNotFoundError(f"No events_part_*.parquet found in {data_dir}")
 
 
 # -------------------

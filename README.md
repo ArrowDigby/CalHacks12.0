@@ -6,4 +6,7 @@ Run with
 
 ```
  python3 main.py --data-dir <data file> --out-dir <directory to store outputs>
+
+ python3 main.py --data-dir data-lite --out-dir outputs
+
 ```

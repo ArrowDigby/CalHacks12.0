@@ -1,0 +1,5 @@
+/data-lite
+/outputs
+/tmp
+__pycache__/
+*.pyc
