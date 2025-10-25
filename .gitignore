@@ -1,0 +1,6 @@
+data-lite/
+data/
+outputs/
+tmp/
+__pycache__/
+*.pyc
