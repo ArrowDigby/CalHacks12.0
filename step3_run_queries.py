@@ -70,6 +70,10 @@ def pick_source(q: dict) -> str:
     selects = q.get("select", [])
     where = q.get("where") or []
     
+    # If no GROUP BY, this is a raw data query (filtering/selecting, not aggregating)
+    if not group_by:
+        return "events_parquet"
+    
     if not _is_simple_agg(selects):
         return "events_parquet"
     
@@ -405,12 +409,34 @@ def run_queries(con, queries_list, out_dir: Path, truth_dir: Path = None):
                 print(f"\n🟦 Query {i} (using: {source}):")
             
             t0 = time.time()
-            res = con.execute(sql)
-            # Normalize column names to lowercase and replace count(*) with count_star()
-            cols = [d[0].lower().replace('count(*)', 'count_star()') for d in res.description]
-            rows = res.fetchall()
-            dt = time.time() - t0
-            cache[cache_key] = (cols, rows)
+            try:
+                res = con.execute(sql)
+                # Normalize column names to lowercase and replace count(*) with count_star()
+                cols = [d[0].lower().replace('count(*)', 'count_star()') for d in res.description]
+                rows = res.fetchall()
+                dt = time.time() - t0
+                cache[cache_key] = (cols, rows)
+            except Exception as e:
+                # Fallback to Parquet if rollup fails
+                if source != "events_parquet":
+                    print(f"   ⚠️  Rollup failed: {str(e)[:100]}")
+                    print(f"   🔄 Falling back to Parquet files...")
+                    
+                    # Retry with Parquet
+                    q_fallback = copy.deepcopy(q)
+                    q_fallback["from"] = "events_parquet"
+                    sql = assemble_sql(q_fallback)
+                    
+                    t0 = time.time()
+                    res = con.execute(sql)
+                    cols = [d[0].lower().replace('count(*)', 'count_star()') for d in res.description]
+                    rows = res.fetchall()
+                    dt = time.time() - t0
+                    cache[cache_key] = (cols, rows)
+                    source = "events_parquet (fallback)"
+                else:
+                    # Even Parquet failed - re-raise the error
+                    raise
 
         print(f"   ✅ Rows: {len(rows):,} | Time: {dt:.3f}s | Source: {source}")
 
