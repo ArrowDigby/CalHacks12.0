@@ -4,10 +4,10 @@ Step 1: Prepare Data
 --------------------
 Reads CSV files and creates:
 1. Persisted table (events_persisted) in DuckDB
-2. Partitioned Parquet files (optional)
+2. View (events_raw) pointing to the persisted table for fallback queries
 
 Usage:
-  python step1_prepare_data.py --data-dir ./data --out-dir ./out [--skip-parquet]
+  python step1_prepare_data.py --data-dir ./data
 """
 
 import duckdb
@@ -92,51 +92,19 @@ def create_persisted_table(con):
     print(f"   ✓ Persisted table created in {time.time() - t0:.1f}s")
 
 
-def write_partitioned_parquet(con, out_dir: Path):
-    """Write partitioned Parquet files (type, day)."""
-    parquet_root = out_dir / "parquet"
-    parquet_events = parquet_root / "events"
-    parquet_root.mkdir(parents=True, exist_ok=True)
-
-    print("🟩 Writing partitioned Parquet (type, day) ...")
-    print("   (This may take a few minutes for large datasets...)")
-    t0 = time.time()
+def create_fallback_view(con):
+    """Create a view that points to the persisted table for queries that don't use rollups."""
+    print("🟩 Creating fallback view (events_raw → events_persisted)...")
     con.execute(f"""
-        COPY (
-          SELECT * FROM {PERSISTED_TABLE}
-          -- ORDER BY removed for faster streaming
-        ) TO '{parquet_events.as_posix()}' (
-          FORMAT 'parquet',
-          PARTITION_BY (type, day),
-          OVERWRITE_OR_IGNORE
-        );
+        CREATE OR REPLACE VIEW events_raw AS
+        SELECT * FROM {PERSISTED_TABLE};
     """)
-    print(f"   ✓ Parquet write completed in {time.time() - t0:.1f}s")
-
-
-def create_parquet_view(con, out_dir: Path, skip_parquet: bool):
-    """Create a view that points to either Parquet files or persisted table."""
-    if skip_parquet:
-        print("🟩 Creating fallback view (using persisted table instead of Parquet)...")
-        con.execute(f"""
-            CREATE OR REPLACE VIEW events_parquet AS
-            SELECT * FROM {PERSISTED_TABLE};
-        """)
-        print("   ✓ View created (using persisted table)")
-    else:
-        parquet_events = out_dir / "parquet" / "events"
-        print("🟩 Creating view over Parquet dataset ...")
-        con.execute(f"""
-            CREATE OR REPLACE VIEW events_parquet AS
-            SELECT *
-            FROM read_parquet('{(parquet_events / "**/*.parquet").as_posix()}');
-        """)
-        print("   ✓ View created over Parquet files")
+    print("   ✓ View created")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Step 1: Prepare data - create persisted table and Parquet files"
+        description="Step 1: Prepare data - create persisted table in DuckDB"
     )
     parser.add_argument(
         "--data-dir",
@@ -144,28 +112,16 @@ def main():
         required=True,
         help="The folder where the input CSV files are located"
     )
-    parser.add_argument(
-        "--out-dir",
-        type=Path,
-        required=True,
-        help="Where to output Parquet files"
-    )
-    parser.add_argument(
-        "--skip-parquet",
-        action="store_true",
-        help="Skip Parquet writing (use persisted table only, much faster)"
-    )
 
     args = parser.parse_args()
 
-    # Ensure directories exist
+    # Ensure database directory exists
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    args.out_dir.mkdir(parents=True, exist_ok=True)
 
     # Connect to DuckDB
     con = duckdb.connect(DB_PATH)
     
-    # Tune DuckDB
+    # Tune DuckDB for optimal performance
     threads = os.cpu_count() or 4
     con.execute(f"PRAGMA threads={threads};")
     mem_limit = os.environ.get("DUCKDB_MEMORY_LIMIT", "14GB")
@@ -175,18 +131,12 @@ def main():
     print("=" * 60)
     print("STEP 1: PREPARE DATA")
     print("=" * 60)
+    print(f"📊 Using {threads} threads and {mem_limit} memory limit")
 
     # Load and prepare data
     load_data(con, args.data_dir)
     create_persisted_table(con)
-    
-    # Write Parquet or skip
-    if not args.skip_parquet:
-        write_partitioned_parquet(con, args.out_dir)
-    else:
-        print("⚡ Skipping Parquet write (--skip-parquet flag)")
-    
-    create_parquet_view(con, args.out_dir, args.skip_parquet)
+    create_fallback_view(con)
 
     con.close()
 

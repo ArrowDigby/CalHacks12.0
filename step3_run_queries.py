@@ -34,6 +34,8 @@ ROLLUP_BY_COUNTRY_DAY = "by_country_day"
 ROLLUP_BY_PUBLISHER_DAY = "by_publisher_day"
 ROLLUP_BY_ADVERTISER_DAY = "by_advertiser_day"
 ROLLUP_BY_PUBLISHER_COUNTRY_DAY = "by_publisher_country_day"
+ROLLUP_BY_ADVERTISER_COUNTRY_DAY = "by_advertiser_country_day"
+ROLLUP_BY_PUBLISHER_ADVERTISER_DAY = "by_publisher_advertiser_day"
 ROLLUP_BY_MINUTE = "by_minute"
 ROLLUP_BY_COUNTRY = "by_country"
 ROLLUP_BY_PUBLISHER = "by_publisher"
@@ -70,8 +72,12 @@ def pick_source(q: dict) -> str:
     selects = q.get("select", [])
     where = q.get("where") or []
     
+    # If no GROUP BY, this is a raw data query (filtering/selecting, not aggregating)
+    if not group_by:
+        return "events_raw"
+    
     if not _is_simple_agg(selects):
-        return "events_parquet"
+        return "events_raw"
     
     # Extract columns referenced in WHERE clause
     where_cols = set()
@@ -80,87 +86,156 @@ def pick_source(q: dict) -> str:
     
     needs_day = "day" in group_by
     
-    # Rollup schema reference:
-    # by_day: day, type
-    # by_country_day: day, country, type
-    # by_publisher_day: day, publisher_id, type
-    # by_advertiser_day: day, advertiser_id, type
-    # by_publisher_country_day: day, publisher_id, country, type
-    # by_minute: minute, day, type
-    # by_country: country, type
-    # by_publisher: publisher_id, type
-    # by_advertiser: advertiser_id, type
+    # Rollup schema reference (columns that exist in each rollup):
+    # by_day: day, type, cnt, sum_bid, sum_total
+    # by_country_day: day, country, type, cnt, sum_bid, sum_total
+    # by_publisher_day: day, publisher_id, type, cnt, sum_bid, sum_total
+    # by_advertiser_day: day, advertiser_id, type, cnt, sum_bid, sum_total
+    # by_publisher_country_day: day, publisher_id, country, type, cnt, sum_bid, sum_total
+    # by_advertiser_country_day: day, advertiser_id, country, type, cnt, sum_bid, sum_total
+    # by_publisher_advertiser_day: day, publisher_id, advertiser_id, type, cnt, sum_bid, sum_total
+    # by_minute: minute, day, type, cnt, sum_bid, sum_total
+    # by_country: country, type, cnt, sum_bid, sum_total
+    # by_publisher: publisher_id, type, cnt, sum_bid, sum_total
+    # by_advertiser: advertiser_id, type, cnt, sum_bid, sum_total
+    
+    # Helper function to check if rollup has all required columns
+    def _rollup_has_columns(rollup_name: str, required_cols: set) -> bool:
+        """Check if a rollup has all required columns (group_by + where filters)."""
+        rollup_schemas = {
+            ROLLUP_BY_DAY: {"day", "type"},
+            ROLLUP_BY_COUNTRY_DAY: {"day", "country", "type"},
+            ROLLUP_BY_PUBLISHER_DAY: {"day", "publisher_id", "type"},
+            ROLLUP_BY_ADVERTISER_DAY: {"day", "advertiser_id", "type"},
+            ROLLUP_BY_PUBLISHER_COUNTRY_DAY: {"day", "publisher_id", "country", "type"},
+            ROLLUP_BY_ADVERTISER_COUNTRY_DAY: {"day", "advertiser_id", "country", "type"},
+            ROLLUP_BY_PUBLISHER_ADVERTISER_DAY: {"day", "publisher_id", "advertiser_id", "type"},
+            ROLLUP_BY_MINUTE: {"minute", "day", "type"},
+            ROLLUP_BY_COUNTRY: {"country", "type"},
+            ROLLUP_BY_PUBLISHER: {"publisher_id", "type"},
+            ROLLUP_BY_ADVERTISER: {"advertiser_id", "type"},
+        }
+        rollup_cols = rollup_schemas.get(rollup_name, set())
+        return required_cols.issubset(rollup_cols)
     
     # Check for minute-level queries first
     if "minute" in group_by:
         # Minute-level queries can use by_minute rollup if only grouping by minute + type
-        if group_by in ({"minute"}, {"minute", "type"}):
-            # Check if filters are compatible (only type and day are in by_minute)
-            if where_cols - {"type", "day"} == set():
-                # Can filter by type and day, but need to apply day filter in WHERE
+        if group_by in ({"minute"}, {"minute", "type"}, {"minute", "day"}, {"minute", "day", "type"}):
+            # Check if rollup has all required columns (group_by + where filters)
+            required_cols = group_by | where_cols
+            if _rollup_has_columns(ROLLUP_BY_MINUTE, required_cols):
                 return ROLLUP_BY_MINUTE
-        return "events_parquet"  # Need full data for complex minute queries
+        return "events_raw"  # Need full data for complex minute queries
     
     if needs_day:
         # Query explicitly groups by day - use matching rollup
         dims = group_by - {"day"}
-        if dims == {"country"}:
-            return ROLLUP_BY_COUNTRY_DAY
-        if dims == {"publisher_id"}:
-            # Check if country filter is used
-            if "country" in where_cols:
-                # Use the new 3-dimensional rollup
+        required_cols = group_by | where_cols
+        
+        # 3-dimensional rollups (day + 2 dimensions)
+        if dims == {"publisher_id", "country"} or dims == {"publisher_id", "country", "type"}:
+            if _rollup_has_columns(ROLLUP_BY_PUBLISHER_COUNTRY_DAY, required_cols):
                 return ROLLUP_BY_PUBLISHER_COUNTRY_DAY
-            return ROLLUP_BY_PUBLISHER_DAY
-        if dims == {"advertiser_id"}:
+        if dims == {"advertiser_id", "country"} or dims == {"advertiser_id", "country", "type"}:
+            if _rollup_has_columns(ROLLUP_BY_ADVERTISER_COUNTRY_DAY, required_cols):
+                return ROLLUP_BY_ADVERTISER_COUNTRY_DAY
+        if dims == {"publisher_id", "advertiser_id"} or dims == {"publisher_id", "advertiser_id", "type"}:
+            if _rollup_has_columns(ROLLUP_BY_PUBLISHER_ADVERTISER_DAY, required_cols):
+                return ROLLUP_BY_PUBLISHER_ADVERTISER_DAY
+        
+        # 2-dimensional rollups (day + 1 dimension)
+        if dims == {"country"} or dims == {"country", "type"}:
+            if _rollup_has_columns(ROLLUP_BY_COUNTRY_DAY, required_cols):
+                return ROLLUP_BY_COUNTRY_DAY
+        if dims == {"publisher_id"} or dims == {"publisher_id", "type"}:
+            # Check if we need country filter (use 3D rollup for better selectivity)
             if "country" in where_cols:
-                return "events_parquet"  # No advertiser+country+day rollup
-            return ROLLUP_BY_ADVERTISER_DAY
+                if _rollup_has_columns(ROLLUP_BY_PUBLISHER_COUNTRY_DAY, required_cols):
+                    return ROLLUP_BY_PUBLISHER_COUNTRY_DAY
+            if _rollup_has_columns(ROLLUP_BY_PUBLISHER_DAY, required_cols):
+                return ROLLUP_BY_PUBLISHER_DAY
+        if dims == {"advertiser_id"} or dims == {"advertiser_id", "type"}:
+            if "country" in where_cols:
+                if _rollup_has_columns(ROLLUP_BY_ADVERTISER_COUNTRY_DAY, required_cols):
+                    return ROLLUP_BY_ADVERTISER_COUNTRY_DAY
+            if _rollup_has_columns(ROLLUP_BY_ADVERTISER_DAY, required_cols):
+                return ROLLUP_BY_ADVERTISER_DAY
+        
+        # 1-dimensional rollup (day only, or day + type)
         if dims in (set(), {"type"}):
-            if "country" in where_cols or "publisher_id" in where_cols or "advertiser_id" in where_cols:
-                return "events_parquet"  # by_day doesn't have these dimensions
-            return ROLLUP_BY_DAY
+            if _rollup_has_columns(ROLLUP_BY_DAY, required_cols):
+                return ROLLUP_BY_DAY
+            # by_day doesn't have required columns (e.g., country filter)
+            return "events_raw"
     else:
         # Query doesn't group by day
-        # Dimension-only rollups (no day column, so can't filter by day)
+        required_cols = group_by | where_cols
+        
         if "day" in where_cols:
-            # Need day filtering - use _day rollups
+            # Need day filtering - use _day rollups and aggregate across days
+            
+            # Check for multi-dimensional groups (3D)
+            if group_by in ({"publisher_id", "country"}, {"publisher_id", "country", "type"}):
+                if _rollup_has_columns(ROLLUP_BY_PUBLISHER_COUNTRY_DAY, required_cols):
+                    return ROLLUP_BY_PUBLISHER_COUNTRY_DAY
+            if group_by in ({"advertiser_id", "country"}, {"advertiser_id", "country", "type"}):
+                if _rollup_has_columns(ROLLUP_BY_ADVERTISER_COUNTRY_DAY, required_cols):
+                    return ROLLUP_BY_ADVERTISER_COUNTRY_DAY
+            if group_by in ({"publisher_id", "advertiser_id"}, {"publisher_id", "advertiser_id", "type"}):
+                if _rollup_has_columns(ROLLUP_BY_PUBLISHER_ADVERTISER_DAY, required_cols):
+                    return ROLLUP_BY_PUBLISHER_ADVERTISER_DAY
+            
+            # Single dimension with day filter
             if group_by in ({"publisher_id"}, {"publisher_id", "type"}):
                 if "country" in where_cols:
-                    # Use the new 3-dimensional rollup
-                    return ROLLUP_BY_PUBLISHER_COUNTRY_DAY
-                return ROLLUP_BY_PUBLISHER_DAY
+                    if _rollup_has_columns(ROLLUP_BY_PUBLISHER_COUNTRY_DAY, required_cols):
+                        return ROLLUP_BY_PUBLISHER_COUNTRY_DAY
+                if _rollup_has_columns(ROLLUP_BY_PUBLISHER_DAY, required_cols):
+                    return ROLLUP_BY_PUBLISHER_DAY
             if group_by in ({"advertiser_id"}, {"advertiser_id", "type"}):
                 if "country" in where_cols:
-                    return "events_parquet"
-                return ROLLUP_BY_ADVERTISER_DAY
+                    if _rollup_has_columns(ROLLUP_BY_ADVERTISER_COUNTRY_DAY, required_cols):
+                        return ROLLUP_BY_ADVERTISER_COUNTRY_DAY
+                if _rollup_has_columns(ROLLUP_BY_ADVERTISER_DAY, required_cols):
+                    return ROLLUP_BY_ADVERTISER_DAY
             if group_by in ({"country"}, {"country", "type"}):
-                return ROLLUP_BY_COUNTRY_DAY
-        else:
-            # No day filter - use dimension-only rollups (smaller!)
-            if "country" in where_cols:
-                # Only country rollups have country column
-                if group_by in ({"country"}, {"country", "type"}):
-                    return ROLLUP_BY_COUNTRY
-                return "events_parquet"  # Other rollups don't have country
-            
-            # No special filters - use dimension-only rollups
-            if group_by == {"country"}:
-                return ROLLUP_BY_COUNTRY
-            if group_by == {"country", "type"}:
-                return ROLLUP_BY_COUNTRY
-            if group_by == {"publisher_id"}:
-                return ROLLUP_BY_PUBLISHER
-            if group_by == {"publisher_id", "type"}:
-                return ROLLUP_BY_PUBLISHER
-            if group_by == {"advertiser_id"}:
-                return ROLLUP_BY_ADVERTISER
-            if group_by == {"advertiser_id", "type"}:
-                return ROLLUP_BY_ADVERTISER
+                if _rollup_has_columns(ROLLUP_BY_COUNTRY_DAY, required_cols):
+                    return ROLLUP_BY_COUNTRY_DAY
             if group_by in (set(), {"type"}):
-                return ROLLUP_BY_DAY
+                if _rollup_has_columns(ROLLUP_BY_DAY, required_cols):
+                    return ROLLUP_BY_DAY
+        else:
+            # No day filter - use dimension-only rollups (smaller, faster!)
+            
+            # Multi-dimensional (without day) - not currently supported, would need new rollups
+            # For now, aggregate from _day rollups (fast enough with only 366 days to aggregate)
+            if group_by in ({"publisher_id", "country"}, {"publisher_id", "country", "type"}):
+                if _rollup_has_columns(ROLLUP_BY_PUBLISHER_COUNTRY_DAY, required_cols):
+                    return ROLLUP_BY_PUBLISHER_COUNTRY_DAY
+            if group_by in ({"advertiser_id", "country"}, {"advertiser_id", "country", "type"}):
+                if _rollup_has_columns(ROLLUP_BY_ADVERTISER_COUNTRY_DAY, required_cols):
+                    return ROLLUP_BY_ADVERTISER_COUNTRY_DAY
+            if group_by in ({"publisher_id", "advertiser_id"}, {"publisher_id", "advertiser_id", "type"}):
+                if _rollup_has_columns(ROLLUP_BY_PUBLISHER_ADVERTISER_DAY, required_cols):
+                    return ROLLUP_BY_PUBLISHER_ADVERTISER_DAY
+            
+            # Single dimension - use dimension-only rollups (no day column)
+            if group_by in ({"country"}, {"country", "type"}):
+                if _rollup_has_columns(ROLLUP_BY_COUNTRY, required_cols):
+                    return ROLLUP_BY_COUNTRY
+            if group_by in ({"publisher_id"}, {"publisher_id", "type"}):
+                if _rollup_has_columns(ROLLUP_BY_PUBLISHER, required_cols):
+                    return ROLLUP_BY_PUBLISHER
+            if group_by in ({"advertiser_id"}, {"advertiser_id", "type"}):
+                if _rollup_has_columns(ROLLUP_BY_ADVERTISER, required_cols):
+                    return ROLLUP_BY_ADVERTISER
+            if group_by in (set(), {"type"}):
+                if _rollup_has_columns(ROLLUP_BY_DAY, required_cols):
+                    return ROLLUP_BY_DAY
     
-    return "events_parquet"
+    # Fallback to raw table if no rollup matches
+    return "events_raw"
 
 
 def _where_clause(where):
@@ -383,6 +458,15 @@ def run_queries(con, queries_list, out_dir: Path, truth_dir: Path = None):
     results = []
     cache = {}
     
+    # Check which rollup tables actually exist in the database
+    existing_tables = set()
+    try:
+        table_list = con.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='main'").fetchall()
+        existing_tables = {table[0] for table in table_list}
+    except:
+        # If we can't check tables, assume none exist
+        pass
+    
     for i, q in enumerate(queries_list, 1):
         q_working = copy.deepcopy(q)
         source = pick_source(q_working)
@@ -395,9 +479,19 @@ def run_queries(con, queries_list, out_dir: Path, truth_dir: Path = None):
             print(f"\n🟦 Query {i} (cached):")
             dt = 0.0
         else:
-            if source in (ROLLUP_BY_DAY, ROLLUP_BY_COUNTRY_DAY, ROLLUP_BY_PUBLISHER_DAY, ROLLUP_BY_ADVERTISER_DAY,
-                          ROLLUP_BY_PUBLISHER_COUNTRY_DAY, ROLLUP_BY_MINUTE,
-                          ROLLUP_BY_COUNTRY, ROLLUP_BY_PUBLISHER, ROLLUP_BY_ADVERTISER):
+            # Check if we're trying to use a rollup that doesn't exist
+            is_rollup = source in (ROLLUP_BY_DAY, ROLLUP_BY_COUNTRY_DAY, ROLLUP_BY_PUBLISHER_DAY, ROLLUP_BY_ADVERTISER_DAY,
+                                   ROLLUP_BY_PUBLISHER_COUNTRY_DAY, ROLLUP_BY_ADVERTISER_COUNTRY_DAY, 
+                                   ROLLUP_BY_PUBLISHER_ADVERTISER_DAY, ROLLUP_BY_MINUTE,
+                                   ROLLUP_BY_COUNTRY, ROLLUP_BY_PUBLISHER, ROLLUP_BY_ADVERTISER)
+            
+            if is_rollup and source not in existing_tables:
+                # Rollup doesn't exist, fallback to raw table
+                print(f"\n🟦 Query {i} (rollup {source} not found, using events_raw):")
+                source = "events_raw"
+                q_working["from"] = source
+                sql = assemble_sql(q_working)
+            elif is_rollup:
                 sql = _assemble_rollup_sql(q_working, source)
                 print(f"\n🟦 Query {i} (using rollup: {source}):")
             else:
@@ -405,12 +499,49 @@ def run_queries(con, queries_list, out_dir: Path, truth_dir: Path = None):
                 print(f"\n🟦 Query {i} (using: {source}):")
             
             t0 = time.time()
-            res = con.execute(sql)
-            # Normalize column names to lowercase and replace count(*) with count_star()
-            cols = [d[0].lower().replace('count(*)', 'count_star()') for d in res.description]
-            rows = res.fetchall()
-            dt = time.time() - t0
-            cache[cache_key] = (cols, rows)
+            try:
+                res = con.execute(sql)
+                # Normalize column names to lowercase and replace count(*) with count_star()
+                cols = [d[0].lower().replace('count(*)', 'count_star()') for d in res.description]
+                rows = res.fetchall()
+                dt = time.time() - t0
+                cache[cache_key] = (cols, rows)
+            except Exception as e:
+                error_msg = str(e)
+                # Check if this is a column-related error
+                is_column_error = any(keyword in error_msg.lower() for keyword in [
+                    'column', 'binder', 'catalog', 'referenced', 'not found', 'does not exist'
+                ])
+                
+                # Fallback to raw table if rollup fails
+                if source != "events_raw":
+                    if is_column_error:
+                        print(f"   ⚠️  Rollup missing required columns: {error_msg[:80]}")
+                    else:
+                        print(f"   ⚠️  Rollup query failed: {error_msg[:80]}")
+                    print(f"   🔄 Falling back to events_raw table...")
+                    
+                    # Retry with raw table
+                    q_fallback = copy.deepcopy(q)
+                    q_fallback["from"] = "events_raw"
+                    sql = assemble_sql(q_fallback)
+                    
+                    try:
+                        t0 = time.time()
+                        res = con.execute(sql)
+                        cols = [d[0].lower().replace('count(*)', 'count_star()') for d in res.description]
+                        rows = res.fetchall()
+                        dt = time.time() - t0
+                        cache[cache_key] = (cols, rows)
+                        source = "events_raw (fallback)"
+                    except Exception as e2:
+                        print(f"   ❌ Fallback also failed: {str(e2)[:100]}")
+                        print(f"   Original error: {error_msg}")
+                        raise e2
+                else:
+                    # Even fallback table failed - show detailed error
+                    print(f"   ❌ Query failed on raw table: {error_msg}")
+                    raise
 
         print(f"   ✅ Rows: {len(rows):,} | Time: {dt:.3f}s | Source: {source}")
 
@@ -500,7 +631,8 @@ def main():
     for r in results:
         source_type = "ROLLUP" if r['source'] in (ROLLUP_BY_DAY, ROLLUP_BY_COUNTRY_DAY, 
                                                     ROLLUP_BY_PUBLISHER_DAY, ROLLUP_BY_ADVERTISER_DAY,
-                                                    ROLLUP_BY_PUBLISHER_COUNTRY_DAY, ROLLUP_BY_MINUTE,
+                                                    ROLLUP_BY_PUBLISHER_COUNTRY_DAY, ROLLUP_BY_ADVERTISER_COUNTRY_DAY,
+                                                    ROLLUP_BY_PUBLISHER_ADVERTISER_DAY, ROLLUP_BY_MINUTE,
                                                     ROLLUP_BY_COUNTRY, ROLLUP_BY_PUBLISHER, 
                                                     ROLLUP_BY_ADVERTISER) else "TABLE"
         status_str = ""
