@@ -53,7 +53,6 @@ def build_day_rollups(con):
         CREATE OR REPLACE TABLE {ROLLUP_BY_DAY} AS
         SELECT day, type,
                COUNT(*) AS cnt,
-               COUNT(DISTINCT user_id) AS unique_users,
                SUM(bid_price) AS sum_bid,
                SUM(total_price) AS sum_total
         FROM {PERSISTED_TABLE}
@@ -67,7 +66,6 @@ def build_day_rollups(con):
         CREATE OR REPLACE TABLE {ROLLUP_BY_COUNTRY_DAY} AS
         SELECT day, country, type,
                COUNT(*) AS cnt,
-               COUNT(DISTINCT user_id) AS unique_users,
                SUM(bid_price) AS sum_bid,
                SUM(total_price) AS sum_total
         FROM {PERSISTED_TABLE}
@@ -81,7 +79,6 @@ def build_day_rollups(con):
         CREATE OR REPLACE TABLE {ROLLUP_BY_PUBLISHER_DAY} AS
         SELECT day, publisher_id, type,
                COUNT(*) AS cnt,
-               COUNT(DISTINCT user_id) AS unique_users,
                SUM(bid_price) AS sum_bid,
                SUM(total_price) AS sum_total
         FROM {PERSISTED_TABLE}
@@ -95,7 +92,6 @@ def build_day_rollups(con):
         CREATE OR REPLACE TABLE {ROLLUP_BY_ADVERTISER_DAY} AS
         SELECT day, advertiser_id, type,
                COUNT(*) AS cnt,
-               COUNT(DISTINCT user_id) AS unique_users,
                SUM(bid_price) AS sum_bid,
                SUM(total_price) AS sum_total
         FROM {PERSISTED_TABLE}
@@ -109,7 +105,6 @@ def build_day_rollups(con):
         CREATE OR REPLACE TABLE {ROLLUP_BY_PUBLISHER_COUNTRY_DAY} AS
         SELECT day, publisher_id, country, type,
                COUNT(*) AS cnt,
-               COUNT(DISTINCT user_id) AS unique_users,
                SUM(bid_price) AS sum_bid,
                SUM(total_price) AS sum_total
         FROM {PERSISTED_TABLE}
@@ -123,7 +118,6 @@ def build_day_rollups(con):
         CREATE OR REPLACE TABLE {ROLLUP_BY_ADVERTISER_COUNTRY_DAY} AS
         SELECT day, advertiser_id, country, type,
                COUNT(*) AS cnt,
-               COUNT(DISTINCT user_id) AS unique_users,
                SUM(bid_price) AS sum_bid,
                SUM(total_price) AS sum_total
         FROM {PERSISTED_TABLE}
@@ -137,7 +131,6 @@ def build_day_rollups(con):
         CREATE OR REPLACE TABLE {ROLLUP_BY_PUBLISHER_ADVERTISER_DAY} AS
         SELECT day, publisher_id, advertiser_id, type,
                COUNT(*) AS cnt,
-               COUNT(DISTINCT user_id) AS unique_users,
                SUM(bid_price) AS sum_bid,
                SUM(total_price) AS sum_total
         FROM {PERSISTED_TABLE}
@@ -156,7 +149,6 @@ def build_minute_rollups(con):
         CREATE OR REPLACE TABLE {ROLLUP_BY_MINUTE} AS
         SELECT minute, day, type,
                COUNT(*) AS cnt,
-               COUNT(DISTINCT user_id) AS unique_users,
                SUM(bid_price) AS sum_bid,
                SUM(total_price) AS sum_total
         FROM {PERSISTED_TABLE}
@@ -175,7 +167,6 @@ def build_dimension_rollups(con):
         CREATE OR REPLACE TABLE {ROLLUP_BY_COUNTRY} AS
         SELECT country, type,
                COUNT(*) AS cnt,
-               COUNT(DISTINCT user_id) AS unique_users,
                SUM(bid_price) AS sum_bid,
                SUM(total_price) AS sum_total
         FROM {PERSISTED_TABLE}
@@ -189,7 +180,6 @@ def build_dimension_rollups(con):
         CREATE OR REPLACE TABLE {ROLLUP_BY_PUBLISHER} AS
         SELECT publisher_id, type,
                COUNT(*) AS cnt,
-               COUNT(DISTINCT user_id) AS unique_users,
                SUM(bid_price) AS sum_bid,
                SUM(total_price) AS sum_total
         FROM {PERSISTED_TABLE}
@@ -203,7 +193,6 @@ def build_dimension_rollups(con):
         CREATE OR REPLACE TABLE {ROLLUP_BY_ADVERTISER} AS
         SELECT advertiser_id, type,
                COUNT(*) AS cnt,
-               COUNT(DISTINCT user_id) AS unique_users,
                SUM(bid_price) AS sum_bid,
                SUM(total_price) AS sum_total
         FROM {PERSISTED_TABLE}
