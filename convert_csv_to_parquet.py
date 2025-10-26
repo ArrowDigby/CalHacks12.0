@@ -94,6 +94,7 @@ def convert_csv_to_parquet(data_dir: Path, out_dir: Path):
     write_time = time.time() - write_start
     
     print(f"   ✅ Parquet write completed in {write_time:.1f}s")
+    print(f"   ✅ Using DuckDB 1.1.3 optimized defaults (no bloom filter overhead)")
     
     # Calculate total parquet size
     total_size_parquet = sum(

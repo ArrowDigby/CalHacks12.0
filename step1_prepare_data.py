@@ -70,7 +70,7 @@ def load_data_from_csv(con, data_dir: Path):
             SELECT
               ts,
               DATE_TRUNC('week', ts)              AS week,
-              DATE(ts)                            AS day,
+              CAST(ts AS DATE)                    AS day,
               DATE_TRUNC('hour', ts)              AS hour,
               STRFTIME(ts, '%Y-%m-%d %H:%M')      AS minute,
               type,
@@ -115,7 +115,7 @@ def load_data_from_parquet(con, parquet_dir: Path):
         SELECT
             ts,
             DATE_TRUNC('week', ts)              AS week,
-            DATE(ts)                            AS day,
+            CAST(ts AS DATE)                    AS day,
             DATE_TRUNC('hour', ts)              AS hour,
             STRFTIME(ts, '%Y-%m-%d %H:%M')      AS minute,
             type,
@@ -145,13 +145,12 @@ def write_partitioned_parquet(con, out_dir: Path):
     parquet_events = parquet_root / "events"
     parquet_root.mkdir(parents=True, exist_ok=True)
 
-    print("🟩 Writing partitioned Parquet (type, day) ...")
+    print("🟩 Writing partitioned Parquet (type, day)...")
     print("   (This may take a few minutes for large datasets...)")
     t0 = time.time()
     con.execute(f"""
         COPY (
           SELECT * FROM {PERSISTED_TABLE}
-          -- ORDER BY removed for faster streaming
         ) TO '{parquet_events.as_posix()}' (
           FORMAT 'parquet',
           PARTITION_BY (type, day),
@@ -159,6 +158,7 @@ def write_partitioned_parquet(con, out_dir: Path):
         );
     """)
     print(f"   ✓ Parquet write completed in {time.time() - t0:.1f}s")
+    print(f"   ✓ Using DuckDB 1.1.3 optimized defaults (no bloom filter overhead)")
 
 
 def create_parquet_view(con, parquet_dir: Path = None):
@@ -172,7 +172,7 @@ def create_parquet_view(con, parquet_dir: Path = None):
             SELECT
                 ts,
                 DATE_TRUNC('week', ts)              AS week,
-                DATE(ts)                            AS day,
+                CAST(ts AS DATE)                    AS day,
                 DATE_TRUNC('hour', ts)              AS hour,
                 STRFTIME(ts, '%Y-%m-%d %H:%M')      AS minute,
                 type,
